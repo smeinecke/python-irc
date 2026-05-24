@@ -38,6 +38,7 @@ Notes:
 
 import asyncio
 import logging
+import socket
 import threading
 import warnings
 
@@ -226,6 +227,23 @@ class DCCProtocol(IrcProtocol):
     this class will need to be overridden.
     """
 
+    def connection_made(self, transport):
+        if self.connection.passive and not self.connection.connected:
+            self.connection.transport = transport
+            self.connection.connected = True
+            self.connection.peeraddress, self.connection.peerport = transport.get_extra_info('peername')
+            log.debug("DCC connection from %s:%d", self.connection.peeraddress, self.connection.peerport)
+            self.connection.reactor._handle_event(
+                self.connection, Event("dcc_connect", self.connection.peeraddress, None, None)
+            )
+            if hasattr(self.connection, 'server') and self.connection.server:
+                self.connection.server.close()
+            return
+
+        # For active connections, ensure transport is set if not already
+        if not getattr(self.connection, 'transport', None):
+            self.connection.transport = transport
+
 
 class AioDCCConnection(DCCConnection):
     """
@@ -278,17 +296,73 @@ class AioDCCConnection(DCCConnection):
         self.reactor._on_connect(self.protocol, self.transport)
         return self
 
-    # TODO: implement listen() in asyncio way
-    async def listen(self, addr=None) -> "AioDCCConnection":
+    async def listen(self, addr=None, port=None, ipv6=False) -> "AioDCCConnection":
         """Wait for a connection/reconnection from a DCC peer.
 
         Returns the DCCConnection object.
 
         The local IP address and port are available as
+        self.localaddress and self.localport.  After connection from a
+        peer, the peer address and port are available as
         self.peeraddress and self.peerport.
-        """
 
-        raise NotImplementedError()
+        Arguments:
+            addr -- Host string or (host, port) tuple to bind to.
+                    If a tuple, the port is only used if `port` is None.
+            port -- Port to listen on. Can be an int, a (min, max) tuple
+                    to try a range, or a list of ports to try in order.
+                    Overrides the port in `addr` if both are provided.
+            ipv6 -- Use IPv6 if True.
+        """
+        self.passive = True
+        self.handlers = {}
+        self.buffer = self.buffer_class()
+
+        # Resolve host and default port from addr
+        if addr is None:
+            host = socket.gethostbyname(socket.gethostname())
+            addr_port = 0
+        elif isinstance(addr, str):
+            host = addr
+            addr_port = 0
+        else:
+            host, addr_port = addr
+
+        # port parameter overrides addr port if specified
+        if port is None:
+            port = addr_port
+
+        def factory():
+            return self.protocol_class(self, self.reactor.loop)
+
+        family = socket.AF_INET6 if ipv6 else socket.AF_INET
+
+        # Build iterable of ports to try
+        if isinstance(port, int):
+            ports = [port]
+        elif isinstance(port, tuple):
+            ports = range(port[0], port[1] + 1)
+        else:
+            ports = port  # assume list/iterable
+
+        last_error = None
+        for try_port in ports:
+            try:
+                self.server = await self.reactor.loop.create_server(
+                    factory, host, try_port, family=family
+                )
+                break
+            except OSError as ex:
+                last_error = ex
+                continue
+        else:
+            raise DCCConnectionError(f"Couldn't bind socket: {last_error}") from last_error
+
+        # Get the actual bound address and port
+        socket_obj = self.server.sockets[0]
+        self.localaddress, self.localport = socket_obj.getsockname()
+
+        return self
 
     def disconnect(self, message: str = "") -> None:
         """Hang up the connection and close the object.
@@ -301,6 +375,12 @@ class AioDCCConnection(DCCConnection):
             del self.connected
         except AttributeError:
             return
+
+        try:
+            if hasattr(self, 'server') and self.server:
+                self.server.close()
+        except AttributeError:
+            pass
 
         try:
             self.transport.close()
@@ -316,10 +396,6 @@ class AioDCCConnection(DCCConnection):
         """
         handles incoming data from the `DCCProtocol` connection.
         """
-
-        if self.passive and not self.connected:
-            raise NotImplementedError()
-            # TODO: implement passive DCC connection
 
         if self.dcctype == "chat":
             self.buffer.feed(new_data)
