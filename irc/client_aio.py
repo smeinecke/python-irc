@@ -27,7 +27,6 @@ cousin, including:
     that dispatches events to instance methods is included.
 
 Current limitations:
-  * DCC chat has not yet been implemented
   * RFCs 2810, 2811, 2812, and 2813 have not been considered.
 
 Notes:
@@ -427,6 +426,16 @@ class AioDCCConnection(DCCConnection):
             )
             event = Event(command, prefix, target, arguments)
             self.reactor._handle_event(self, event)
+
+    def privmsg(self, text: str) -> None:
+        """
+        Send text to DCC peer.
+
+        The text will be padded with a newline if it's a DCC CHAT session.
+        """
+        if self.dcctype == 'chat':
+            text += '\n'
+        return self.send_bytes(self.encode(text))
 
     def send_bytes(self, data: bytes) -> None:
         """

@@ -396,3 +396,39 @@ def test_dcc_connection_connect_error():
         loop.run_until_complete(dcc.connect('127.0.0.1', 12345))
 
     loop.close()
+
+
+def test_dcc_connection_privmsg_chat():
+    mock_transport = MagicMock()
+    mock_protocol = MagicMock()
+
+    loop = asyncio.new_event_loop()
+    loop.create_connection = make_mocked_create_connection(
+        mock_transport, mock_protocol
+    )
+    reactor = client_aio.AioReactor(loop=loop)
+    dcc = reactor.dcc('chat')
+    loop.run_until_complete(dcc.connect('127.0.0.1', 12345))
+    dcc.privmsg('hello')
+
+    mock_transport.write.assert_called_with(b'hello\n')
+
+    loop.close()
+
+
+def test_dcc_connection_privmsg_raw():
+    mock_transport = MagicMock()
+    mock_protocol = MagicMock()
+
+    loop = asyncio.new_event_loop()
+    loop.create_connection = make_mocked_create_connection(
+        mock_transport, mock_protocol
+    )
+    reactor = client_aio.AioReactor(loop=loop)
+    dcc = reactor.dcc('raw')
+    loop.run_until_complete(dcc.connect('127.0.0.1', 12345))
+    dcc.privmsg('hello')
+
+    mock_transport.write.assert_called_with(b'hello')
+
+    loop.close()
