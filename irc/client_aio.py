@@ -28,7 +28,6 @@ cousin, including:
 
 Current limitations:
   * DCC chat has not yet been implemented
-  * DCC file transfers are not suppored
   * RFCs 2810, 2811, 2812, and 2813 have not been considered.
 
 Notes:
@@ -40,10 +39,12 @@ Notes:
 import asyncio
 import logging
 import threading
+import warnings
 
 from jaraco.stream import buffer
 from . import connection
 from .client import (
+    DCCConnectionError,
     Event,
     Reactor,
     ServerConnection,
@@ -233,8 +234,8 @@ class AioDCCConnection(DCCConnection):
     This class overrides select-based methods with asyncio-based ones.
     """
 
-    rector: "AioReactor"
-    buffer_class = buffer.DecodingLineBuffer
+    reactor: "AioReactor"
+    buffer_class = buffer.LineBuffer
 
     protocol_class = DCCProtocol
     protocol: DCCProtocol
@@ -264,8 +265,11 @@ class AioDCCConnection(DCCConnection):
 
         self.connect_factory = connect_factory
         protocol_instance = self.protocol_class(self, self.reactor.loop)
-        connection = self.connect_factory(protocol_instance, (self.peeraddress, self.peerport))
-        transport, protocol = await connection
+        try:
+            connection = self.connect_factory(protocol_instance, (self.peeraddress, self.peerport))
+            transport, protocol = await connection
+        except OSError as ex:
+            raise DCCConnectionError(f"Couldn't connect to socket: {ex}") from ex
 
         self.transport = transport
         self.protocol = protocol
@@ -298,7 +302,10 @@ class AioDCCConnection(DCCConnection):
         except AttributeError:
             return
 
-        self.transport.close()
+        try:
+            self.transport.close()
+        except AttributeError:
+            pass
 
         self.reactor._handle_event(
             self, Event("dcc_disconnect", self.peeraddress, "", [message])
@@ -345,14 +352,14 @@ class AioDCCConnection(DCCConnection):
             event = Event(command, prefix, target, arguments)
             self.reactor._handle_event(self, event)
 
-    def send_bytes(self, bytes: bytes) -> None:
+    def send_bytes(self, data: bytes) -> None:
         """
         Send data to DCC peer.
         """
         try:
-            self.transport.write(bytes)
-            log.debug("TO PEER: %r\n", bytes)
-        except OSError:
+            self.transport.write(data)
+            log.debug("TO PEER: %r\n", data)
+        except (OSError, AttributeError):
             self.disconnect("Connection reset by peer.")
 
 
@@ -452,3 +459,21 @@ class AioSimpleIRCClient(SimpleIRCClient):
 
     def connect(self, *args, **kwargs):
         self.reactor.loop.run_until_complete(self.connection.connect(*args, **kwargs))
+
+    def dcc_connect(self, address, port, dcctype="chat"):
+        """Connect to a DCC peer.
+
+        Returns an AioDCCConnection instance.
+        """
+        warnings.warn("Use self.dcc(type).connect()", DeprecationWarning, stacklevel=2)
+        dcc = self.dcc(dcctype)
+        return self.reactor.loop.run_until_complete(dcc.connect(address, port))
+
+    def dcc_listen(self, dcctype="chat"):
+        """Listen for connections from a DCC peer.
+
+        Returns an AioDCCConnection instance.
+        """
+        warnings.warn("Use self.dcc(type).listen()", DeprecationWarning, stacklevel=2)
+        dcc = self.dcc(dcctype)
+        return self.reactor.loop.run_until_complete(dcc.listen())
